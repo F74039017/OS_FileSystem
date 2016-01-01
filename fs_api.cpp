@@ -28,6 +28,7 @@ FPT stop when flag = -1
 #include <fcntl.h>
 #include <map>
 #include <vector>
+#include <iostream>
 using namespace std;
 
 #define KB 1024
@@ -68,7 +69,7 @@ FS_HEADER header_info; // read from the start of the fs file
 
 typedef struct index_content {
 	int32_t page_number;
-	uint32_t remain;
+	int32_t remain;
 	vector<int32_t> page_list;
 }index_page;
 
@@ -84,25 +85,32 @@ int init_OFT(int max_size, FS_HEADER* header);
 int init_FPT(int max_size, FS_HEADER* header);
 int read_header();
 void add_extention(char *target, const char *source);
-
 int32_t getFreePage(); // wb
 void update_info();
-
+void header_wb(); // wb
+int32_t oft_addEntry(const char* filename); // wb
+int32_t getPOMap(int32_t index); // work
 int64_t page2addr(int32_t index);
+int32_t getIndexMap(int32_t index);
+
 int myfs_file_open(const char* filename); // empty now
 int myfs_file_create(const char* filename);
 int myfs_file_delete(const char* filename);
 
-void header_wb(); // wb
-void index_page_wb(); // empty now
-int32_t oft_addEntry(const char* filename); // wb
+void index_page_wb(int32_t oft_index, index_page *ip);
+
+
+
+int allocNewPage(int32_t index);
+void read_indexPage(int32_t index, index_page *ip);
 
 void showFiles();
 
 int main()
 {
 	//myfs_create("my_fs", 1*MB);
-	myfs_file_create("Hello");
+	myfs_file_create("Good");
+	//myfs_file_open("Hello");
 	showFiles();
 	return 0;
 }
@@ -136,7 +144,32 @@ void header_wb()
 /* open a file in fs and return the file descriptor */
 int myfs_file_open(const char* filename)
 {
-	
+	init_fs();
+	/* DEBUG */
+	printf("check oft_startadd = %ld\n", header_info.oft_startadd);
+	printf("create file with desc %d to %d\n", fd_cnt, ppt[fd_cnt]);
+	printf("first entry is name: %s and page index: %d\n", oft_ptr[0].filename, oft_ptr[0].index);
+	printf("header oft entry cnt: %d\n", header_info.oft_entry_cnt);
+}
+
+/* 
+return ppt to opt map index.
+if the index is invalid => return -1
+ */
+int32_t getPOMap(int32_t index)
+{
+	if(ppt.find(index)==ppt.end())
+		return -1;
+	else
+		return ppt[index];
+}
+
+/*
+return index page address
+*/
+int32_t getIndexMap(int32_t index)
+{
+	return oft_ptr[index].index;
 }
 
 /*
@@ -146,12 +179,13 @@ if retuen value is -1 => no more place
 // my oft can't recycle even delete data...
 int32_t oft_addEntry(const char* filename) 
 {
-	int32_t addr_offset = header_info.oft_startadd+header_info.oft_entry_cnt*sizeof(OFT); // calculate the addr of new entry
+	int64_t addr_offset = header_info.oft_startadd+header_info.oft_entry_cnt*sizeof(OFT); // calculate the addr of new entry
 	OFT entry;
 	entry.index = getFreePage();	// assign free page for indexed page
 	strcpy(entry.filename, filename);
 	FILE* fp = fopen(FS_NAME, "rb+"); // write new entry to fs file
 	fseek(fp, addr_offset, SEEK_SET);
+	//printf("temp entry => name: %s, index: %d\n", entry.filename, entry.index);
 	fwrite(&entry, sizeof(OFT), 1, fp);
 	fclose(fp);
 	int32_t ret = header_info.oft_entry_cnt++; // write header to fs file
@@ -166,17 +200,72 @@ create a file in fs and return the file descriptor
 int myfs_file_create(const char* filename)
 {
 	init_fs();
-	ppt[++fd_cnt] = oft_addEntry(filename);
+	int32_t map_oft_index = oft_addEntry(filename); 
+	ppt[++fd_cnt] = map_oft_index;
+
+	/* init new page for index page */
+	int32_t index = getFreePage();
+	index_page ip;
+	ip.page_number = 1;
+	ip.remain = PAGE_SIZE;
+	ip.page_list.push_back(index);
+	int64_t addr = page2addr(getIndexMap(map_oft_index));
+	//cout << "check addr " << addr << ", check fpage_start " << header_info.fpage_startadd << endl;
+	index_page_wb(map_oft_index, &ip);
+	ip.page_number = 0;
+	allocNewPage(map_oft_index);
 
 	/* DEBUG */
 	/*
 	printf("check oft_startadd = %ld\n", header_info.oft_startadd);
 	printf("create file with desc %d to %d\n", fd_cnt, ppt[fd_cnt]);
-	printf("first entry is name: %s and page index: %d\n", oft_ptr[0].filename, oft_ptr[0].index);
+	//printf("first entry is name: %s and page index: %d\n", oft_ptr[2].filename, oft_ptr[2].index);
 	printf("header oft entry cnt: %d\n", header_info.oft_entry_cnt);
 	*/
 	
 	return fd_cnt; // pp desc
+}
+
+/* alloc new page to specific oft index page */
+int allocNewPage(int32_t oft_index)
+{
+	int32_t index = getFreePage();
+	if(index<0)
+		return index; // no space
+	index_page ip;
+	read_indexPage(oft_index, &ip);
+	ip.page_number++;
+	ip.remain = PAGE_SIZE;
+	ip.page_list.push_back(index);
+	index_page_wb(oft_index, &ip);
+	/* DEBUG */
+	//read_indexPage(oft_index, &ip);
+}
+
+/* write index page data */
+void index_page_wb(int32_t oft_index, index_page *ip)
+{
+	int64_t addr = page2addr(getIndexMap(oft_index));
+	FILE *fp = fopen(FS_NAME, "rb+");
+	fseek(fp, addr, SEEK_SET);
+	fwrite(ip, sizeof(index_page), 1, fp);
+	fclose(fp);
+}
+
+/* read index page content */
+void read_indexPage(int32_t oft_index, index_page *ip)
+{
+	FILE *fp = fopen(FS_NAME, "rb");
+	fseek(fp, page2addr(getIndexMap(oft_index)), SEEK_SET);
+	fread(ip, sizeof(index_page), 1, fp);
+	fclose(fp);
+
+	/* DEBUG */
+	printf("index page => number: %d, remain: %d\n", ip->page_number, ip->remain);
+	for(vector<int32_t>::iterator it=ip->page_list.begin(); it!=ip->page_list.end(); it++)
+		cout << *it << " ";
+	cout << endl;
+
 }
 
 /*
@@ -197,6 +286,7 @@ int32_t getFreePage()
 	{
 		if(fpt_ptr[i].flag==0)
 		{
+			//printf("choose %d\n", i);
 			FILE* fp = fopen(FS_NAME, "rb+"); // write back to fs
 			fseek(fp, header_info.fpt_startadd+i, SEEK_SET);
 			int one = 1;
