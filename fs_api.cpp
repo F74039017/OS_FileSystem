@@ -92,27 +92,43 @@ int32_t oft_addEntry(const char* filename); // wb
 int32_t getPOMap(int32_t index); // work
 int64_t page2addr(int32_t index);
 int32_t getIndexMap(int32_t index);
-
-int myfs_file_open(const char* filename); // empty now
+int myfs_file_open(const char* filename);
 int myfs_file_create(const char* filename);
-int myfs_file_delete(const char* filename);
-
 void index_page_wb(int32_t oft_index, index_page *ip);
-
-
-
-int allocNewPage(int32_t index);
+int32_t allocNewPage(int32_t index);
 void read_indexPage(int32_t index, index_page *ip);
-
 void showFiles();
+void showPPT();
+
+int myfs_file_delete(const char* filename); // empty now
+int myfs_file_write(int fd, char *buf, int count);
+int myfs_file_read(int fd, char *buf, int count);
+int myfs_file_close(int fd);
+
 
 int main()
 {
 	//myfs_create("my_fs", 1*MB);
-	myfs_file_create("Good");
-	//myfs_file_open("Hello");
+	//myfs_file_create("Good"); // open the duplicate check after
+	int fd = myfs_file_open("Good");
+	showPPT();
+	char buf[5*KB] = "Hello";
+	myfs_file_write(fd, buf, 5*KB);
+	char buf2[20];
+	myfs_file_read(fd, buf2, 6);
+	cout << "read data: " << buf2 << endl;
+	myfs_file_close(fd);
+	showPPT();
 	showFiles();
 	return 0;
+}
+
+/* show ppt map emtry */
+void showPPT()
+{
+	cout << "Show PPT" << endl;
+	for(map<int32_t, int32_t>::iterator it=ppt.begin(); it!=ppt.end(); it++)
+		cout << it->first << " " << it->second << endl;
 }
 
 /* show all files in fs */
@@ -141,15 +157,156 @@ void header_wb()
 	update_info();
 }
 
-/* open a file in fs and return the file descriptor */
+/*
+write content to file
+return how success number after write, if fd is invalid => return -1
+*/
+int myfs_file_write(int fd, char *buf, int count)
+{
+	init_fs();
+	
+	int32_t oft_index = getPOMap(fd);
+	if(oft_index<0)
+		return -1;
+	cout << "oft_index = " << oft_index << endl;
+	index_page ip;
+	read_indexPage(oft_index, &ip);
+	
+	int rest = count-ip.remain;
+	int need = 0;
+	int c_count; // for need>0, last page count
+	int extra_page = 0;
+	if(rest>0) // need more pages
+	{
+		need = rest/PAGE_SIZE;
+		c_count = rest%PAGE_SIZE;
+		extra_page = 0;
+		if(c_count>0)
+			need++;
+		else if(c_count==0)	// just fit
+			extra_page = 1;
+	}
+	else if(rest==0)
+		extra_page = 1;
+
+	FILE* fp = fopen(FS_NAME, "rb+");
+	
+	/* write remain */
+	int32_t last_page_index = ip.page_list.back();
+		//printf("need page = %d, c_count = %d, extra_page = %d, last_page_index = %d\n", need, c_count, extra_page, last_page_index);
+	int32_t page_offset = PAGE_SIZE-ip.remain;
+		//cout << page_offset << " " << PAGE_SIZE << " " << ip.remain << endl;
+	fseek(fp, page2addr(last_page_index)+page_offset, SEEK_SET);
+	fwrite(buf, sizeof(char), ip.remain, fp);
+
+	/* write new page */
+	for(int i=0; i<need; i++)
+	{
+		int32_t newPage_index = allocNewPage(oft_index);
+		fseek(fp, page2addr(newPage_index), SEEK_SET);
+		if(i!=need-1)	// not last page => fill it
+			fwrite(buf+ip.remain+i*PAGE_SIZE, sizeof(char), PAGE_SIZE, fp);
+		else
+			fwrite(buf+ip.remain+i*PAGE_SIZE, sizeof(char), c_count, fp);
+	}
+	read_indexPage(oft_index, &ip);
+	ip.remain = PAGE_SIZE-c_count;
+	index_page_wb(oft_index, &ip);
+
+	/* extra page */
+	if(extra_page)
+		allocNewPage(oft_index);
+
+	fclose(fp);
+	return count;
+}
+
+/*
+read content to file
+return how success number after write
+If fd is invalid => return -1
+If count is bigger than file size => retuen -1
+*/
+int myfs_file_read(int fd, char *buf, int count)
+{
+	init_fs();
+	
+	int32_t oft_index = getPOMap(fd);
+	if(oft_index<0)
+		return -1;
+	cout << "oft_index = " << oft_index << endl;
+	index_page ip;
+	read_indexPage(oft_index, &ip);
+
+	int need = count/PAGE_SIZE;
+	int c_count = count%PAGE_SIZE;
+	if(need>ip.page_list.size())	// need test
+		return -1;
+
+	FILE* fp = fopen(FS_NAME, "rb");
+	/* read whole pages */
+	for(int i=0; i<need; i++)
+	{
+		fseek(fp, page2addr(ip.page_list[i]), SEEK_SET);
+		fread(buf+i*PAGE_SIZE, sizeof(char), PAGE_SIZE, fp);
+	}
+	/* read part of page */
+	if(c_count>0)
+	{
+		fseek(fp, page2addr(ip.page_list[need]), SEEK_SET);
+		fread(buf+need*PAGE_SIZE, sizeof(char), c_count, fp);
+	}
+	return count;
+}
+
+/* 
+open a file in fs and return the file descriptor 
+if the file doesn't exist => return -1
+*/
 int myfs_file_open(const char* filename)
 {
 	init_fs();
+
+	FILE* fp = fopen(FS_NAME, "rb+");
+	fseek(fp, header_info.oft_startadd, SEEK_SET);
+	OFT temp;
+	for(int i=0; i<header_info.oft_entry_cnt; i++)
+	{
+		fread(&temp, sizeof(OFT), 1, fp);
+		if(strcmp(temp.filename, filename)==0)
+		{
+			ppt[++fd_cnt] = i;
+			fclose(fp);
+			//printf("No. %d map to index page %d, return desc = %d\n", i, temp.index, fd_cnt);
+			return fd_cnt;
+		}
+	}
+	fclose(fp);
+	return -1;
+
 	/* DEBUG */
+	/*
 	printf("check oft_startadd = %ld\n", header_info.oft_startadd);
 	printf("create file with desc %d to %d\n", fd_cnt, ppt[fd_cnt]);
 	printf("first entry is name: %s and page index: %d\n", oft_ptr[0].filename, oft_ptr[0].index);
 	printf("header oft entry cnt: %d\n", header_info.oft_entry_cnt);
+	*/
+}
+
+/*
+close the file with desc
+if the fd is invalid => return -1, else return 0
+*/
+int myfs_file_close(int fd)
+{
+	init_fs();
+	
+	int32_t oft_index = getPOMap(fd);
+	if(oft_index<0)
+		return -1;
+
+	ppt.erase(fd);	
+	return 0;
 }
 
 /* 
@@ -169,6 +326,7 @@ return index page address
 */
 int32_t getIndexMap(int32_t index)
 {
+	//printf("get index map %d\n", oft_ptr[index].index);
 	return oft_ptr[index].index;
 }
 
@@ -196,10 +354,29 @@ int32_t oft_addEntry(const char* filename)
 
 /* 
 create a file in fs and return the file descriptor 
+if the file name is duplicated => return -1
 */
 int myfs_file_create(const char* filename)
 {
 	init_fs();
+	/* check same name */
+	/*
+	FILE* fp = fopen(FS_NAME, "rb+");
+	fseek(fp, header_info.oft_startadd, SEEK_SET);
+	OFT temp;
+	for(int i=0; i<header_info.oft_entry_cnt; i++)
+	{
+		fread(&temp, sizeof(OFT), 1, fp);
+		if(strcmp(temp.filename, filename)==0)
+		{
+			fclose(fp);
+			return -1;
+		}
+	}
+	fclose(fp);
+	*/
+
+
 	int32_t map_oft_index = oft_addEntry(filename); 
 	ppt[++fd_cnt] = map_oft_index;
 
@@ -212,8 +389,6 @@ int myfs_file_create(const char* filename)
 	int64_t addr = page2addr(getIndexMap(map_oft_index));
 	//cout << "check addr " << addr << ", check fpage_start " << header_info.fpage_startadd << endl;
 	index_page_wb(map_oft_index, &ip);
-	ip.page_number = 0;
-	allocNewPage(map_oft_index);
 
 	/* DEBUG */
 	/*
@@ -226,8 +401,11 @@ int myfs_file_create(const char* filename)
 	return fd_cnt; // pp desc
 }
 
-/* alloc new page to specific oft index page */
-int allocNewPage(int32_t oft_index)
+/*
+alloc new page to specific oft index page
+return new page index
+*/
+int32_t allocNewPage(int32_t oft_index)
 {
 	int32_t index = getFreePage();
 	if(index<0)
@@ -240,6 +418,7 @@ int allocNewPage(int32_t oft_index)
 	index_page_wb(oft_index, &ip);
 	/* DEBUG */
 	//read_indexPage(oft_index, &ip);
+	return index;
 }
 
 /* write index page data */
@@ -248,7 +427,15 @@ void index_page_wb(int32_t oft_index, index_page *ip)
 	int64_t addr = page2addr(getIndexMap(oft_index));
 	FILE *fp = fopen(FS_NAME, "rb+");
 	fseek(fp, addr, SEEK_SET);
-	fwrite(ip, sizeof(index_page), 1, fp);
+	int32_t tpage_number = ip->page_number;
+	fwrite(&tpage_number, sizeof(int32_t), 1, fp);
+	int32_t tremain = ip->remain;
+	fwrite(&tremain, sizeof(int32_t), 1, fp);
+	for(vector<int32_t>::iterator it=ip->page_list.begin(); it!=ip->page_list.end(); it++)
+	{
+		int32_t temp = *it;
+		fwrite(&temp, sizeof(int32_t), 1, fp);
+	}
 	fclose(fp);
 }
 
@@ -257,15 +444,28 @@ void read_indexPage(int32_t oft_index, index_page *ip)
 {
 	FILE *fp = fopen(FS_NAME, "rb");
 	fseek(fp, page2addr(getIndexMap(oft_index)), SEEK_SET);
-	fread(ip, sizeof(index_page), 1, fp);
-	fclose(fp);
+	int32_t tpage_number;
+	fread(&tpage_number, sizeof(int32_t), 1, fp);
+	ip->page_number = tpage_number;
+	int32_t tremain;
+	fread(&tremain, sizeof(int32_t), 1, fp);
+	ip->remain = tremain;
 
+	ip->page_list.clear();
+	for(int i=0; i<tpage_number; i++)
+	{
+		int32_t temp;
+		fread(&temp, sizeof(int32_t), 1, fp);
+		ip->page_list.push_back(temp);
+	}
+	fclose(fp);
 	/* DEBUG */
+	
 	printf("index page => number: %d, remain: %d\n", ip->page_number, ip->remain);
 	for(vector<int32_t>::iterator it=ip->page_list.begin(); it!=ip->page_list.end(); it++)
 		cout << *it << " ";
 	cout << endl;
-
+	
 }
 
 /*
