@@ -97,10 +97,10 @@ int myfs_file_create(const char* filename);
 void index_page_wb(int32_t oft_index, index_page *ip);
 int32_t allocNewPage(int32_t index);
 void read_indexPage(int32_t index, index_page *ip);
-void showFiles();
+void showEntries();
 void showPPT();
 
-int myfs_file_delete(const char* filename); // empty now
+int myfs_file_delete(const char* filename);
 int myfs_file_write(int fd, char *buf, int count);
 int myfs_file_read(int fd, char *buf, int count);
 int myfs_file_close(int fd);
@@ -109,7 +109,8 @@ int myfs_file_close(int fd);
 int main()
 {
 	//myfs_create("my_fs", 1*MB);
-	//myfs_file_create("Good"); // open the duplicate check after
+	//myfs_file_create("After"); // open the duplicate check after
+	/*
 	int fd = myfs_file_open("Good");
 	showPPT();
 	char buf[5*KB] = "Hello";
@@ -119,7 +120,9 @@ int main()
 	cout << "read data: " << buf2 << endl;
 	myfs_file_close(fd);
 	showPPT();
-	showFiles();
+	*/
+	myfs_file_delete("Hello");
+	showEntries();
 	return 0;
 }
 
@@ -132,7 +135,7 @@ void showPPT()
 }
 
 /* show all files in fs */
-void showFiles()
+void showEntries()
 {
 	init_fs();
 	FILE* fp = fopen(FS_NAME, "rb+");
@@ -155,6 +158,35 @@ void header_wb()
 	fwrite(&header_info, sizeof(FS_HEADER), 1, fp);
 	fclose(fp);
 	update_info();
+}
+
+/*
+Free file used pages and modify oft table.
+return 0 if success, else -1
+*/
+int myfs_file_delete(const char* filename)
+{
+	init_fs();
+
+	FILE* fp = fopen(FS_NAME, "rb");
+	fseek(fp, header_info.oft_startadd, SEEK_SET);
+	OFT temp;
+	for(int i=0; i<header_info.oft_entry_cnt; i++)
+	{
+		fread(&temp, sizeof(OFT), 1, fp);
+		if(strcmp(temp.filename, filename)==0)
+		{
+			strcpy(temp.filename, ""); // clean filename
+			int64_t addr_offset = header_info.oft_startadd+i*sizeof(OFT); // calculate the addr of new entry
+			FILE* fp = fopen(FS_NAME, "rb+");
+			fseek(fp, addr_offset, SEEK_SET);
+			fwrite(&temp, sizeof(OFT), 1, fp);	// overwrite
+			fclose(fp);
+			return 0;
+		}
+	}
+	fclose(fp);
+	return -1;
 }
 
 /*
@@ -465,14 +497,6 @@ void read_indexPage(int32_t oft_index, index_page *ip)
 	for(vector<int32_t>::iterator it=ip->page_list.begin(); it!=ip->page_list.end(); it++)
 		cout << *it << " ";
 	cout << endl;
-	
-}
-
-/*
-delete the file from fs and return 0 if success, else return -1
-*/
-int myfs_file_delete(const char* filename)
-{
 	
 }
 
