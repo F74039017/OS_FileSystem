@@ -10,11 +10,10 @@ FPL: Free page list
 
 Indexed Alloc => A page hold all pages which file need
 
+4K page size => hold 36 oft entries
 1M => need 7 pages for OFT
 1 pages for FPT => hold 16.5M
 
-OFT stop when addr = -1
-FPT stop when flag = -1
 ***/
 
 #include <cstdio>
@@ -44,7 +43,7 @@ char FS_NAME[100]; // name of the selected file system
 #define PAGE_SIZE (4*KB)
 
 const char FS_EXT[4] = ".fs";
-unsigned fd_cnt = 0; // only increase...
+unsigned fd_cnt = 0; 
 map<int32_t, int32_t> ppt;	// per-process table
 
 typedef struct OFT_element {
@@ -77,8 +76,6 @@ OFT *oft_ptr = NULL;
 FPT *fpt_ptr = NULL;
 size_t oft_len, fpt_len;
 
-int myfs_create(const char *filesystemname, int max_size);
-int myfs_destroy(const char *filesystemname);
 int select_fs(const char *filesystemname); // not require
 void init_fs();
 int init_OFT(int max_size, FS_HEADER* header);
@@ -92,26 +89,28 @@ int32_t oft_addEntry(const char* filename); // wb
 int32_t getPOMap(int32_t index); // work
 int64_t page2addr(int32_t index);
 int32_t getIndexMap(int32_t index);
-int myfs_file_open(const char* filename);
-int myfs_file_create(const char* filename);
 void index_page_wb(int32_t oft_index, index_page *ip);
 int32_t allocNewPage(int32_t index);
 void read_indexPage(int32_t index, index_page *ip);
 void showEntries();
 void showPPT();
 
+int myfs_create(const char *filesystemname, int max_size);
+int myfs_destroy(const char *filesystemname);
 int myfs_file_delete(const char* filename);
 int myfs_file_write(int fd, char *buf, int count);
 int myfs_file_read(int fd, char *buf, int count);
 int myfs_file_close(int fd);
+int myfs_file_open(const char* filename);
+int myfs_file_create(const char* filename);
 
 
 int main()
 {
-	//myfs_create("my_fs", 1*MB);
-	//myfs_file_create("After"); // open the duplicate check after
-	/*
-	int fd = myfs_file_open("Good");
+	myfs_create("my_fs", 1*MB);
+	//myfs_file_create("Create"); // open the duplicate check after
+	
+	int fd = myfs_file_open("Create");
 	showPPT();
 	char buf[5*KB] = "Hello";
 	myfs_file_write(fd, buf, 5*KB);
@@ -119,9 +118,9 @@ int main()
 	myfs_file_read(fd, buf2, 6);
 	cout << "read data: " << buf2 << endl;
 	myfs_file_close(fd);
-	showPPT();
-	*/
-	myfs_file_delete("Hello");
+	//showPPT();
+
+	//myfs_file_delete("Check");
 	showEntries();
 	return 0;
 }
@@ -171,17 +170,35 @@ int myfs_file_delete(const char* filename)
 	FILE* fp = fopen(FS_NAME, "rb");
 	fseek(fp, header_info.oft_startadd, SEEK_SET);
 	OFT temp;
-	for(int i=0; i<header_info.oft_entry_cnt; i++)
+	for(int i=0; i<header_info.oft_entry_cnt; i++) // i => oft index
 	{
 		fread(&temp, sizeof(OFT), 1, fp);
 		if(strcmp(temp.filename, filename)==0)
 		{
+			fclose(fp); // find the oft entry
+
+			/* Free fpages */
+			int32_t oft_index = i;
+			cout << "delete oft_index = " << oft_index << endl;
+			index_page ip;
+			read_indexPage(oft_index, &ip);
+			FILE* ffp = fopen(FS_NAME, "rb+");
+			int8_t zero = 0;
+			for(vector<int32_t>::iterator it=ip.page_list.begin(); it!=ip.page_list.end(); it++)
+			{	
+				fseek(ffp, header_info.fpt_startadd+*it, SEEK_SET);
+				fwrite(&zero, sizeof(zero), 1, ffp);
+			}
+			fclose(ffp);
+
+			/* Free oft entry */
 			strcpy(temp.filename, ""); // clean filename
 			int64_t addr_offset = header_info.oft_startadd+i*sizeof(OFT); // calculate the addr of new entry
-			FILE* fp = fopen(FS_NAME, "rb+");
-			fseek(fp, addr_offset, SEEK_SET);
-			fwrite(&temp, sizeof(OFT), 1, fp);	// overwrite
-			fclose(fp);
+			FILE* efp = fopen(FS_NAME, "rb+");
+			fseek(efp, addr_offset, SEEK_SET);
+			fwrite(&temp, sizeof(OFT), 1, efp);	// overwrite
+			fclose(efp);
+
 			return 0;
 		}
 	}
@@ -272,7 +289,7 @@ int myfs_file_read(int fd, char *buf, int count)
 
 	int need = count/PAGE_SIZE;
 	int c_count = count%PAGE_SIZE;
-	if(need>ip.page_list.size())	// need test
+	if(need>ip.page_list.size())	
 		return -1;
 
 	FILE* fp = fopen(FS_NAME, "rb");
@@ -366,22 +383,33 @@ int32_t getIndexMap(int32_t index)
 add new entry to OFT, return the index of free page
 if retuen value is -1 => no more place
 */
-// my oft can't recycle even delete data...
 int32_t oft_addEntry(const char* filename) 
 {
-	int64_t addr_offset = header_info.oft_startadd+header_info.oft_entry_cnt*sizeof(OFT); // calculate the addr of new entry
-	OFT entry;
-	entry.index = getFreePage();	// assign free page for indexed page
-	strcpy(entry.filename, filename);
-	FILE* fp = fopen(FS_NAME, "rb+"); // write new entry to fs file
-	fseek(fp, addr_offset, SEEK_SET);
-	//printf("temp entry => name: %s, index: %d\n", entry.filename, entry.index);
-	fwrite(&entry, sizeof(OFT), 1, fp);
+	/* Find empty entries */
+	FILE* fp = fopen(FS_NAME, "rb+");
+	fseek(fp, header_info.oft_startadd, SEEK_SET);
+	OFT temp;
+	for(int i=0; i<header_info.oft_entry_cnt; i++)
+	{
+		fread(&temp, sizeof(OFT), 1, fp);
+		if(strcmp(temp.filename, "")==0)
+		{
+			int64_t addr_offset = header_info.oft_startadd+i*sizeof(OFT); // calculate the addr of new entry
+			OFT entry;
+			entry.index = getFreePage();	// assign free page for indexed page
+			strcpy(entry.filename, filename);
+			FILE* efp = fopen(FS_NAME, "rb+"); // write new entry to fs file
+			fseek(efp, addr_offset, SEEK_SET);
+			//printf("temp entry => name: %s, index: %d\n", entry.filename, entry.index);
+			fwrite(&entry, sizeof(OFT), 1, efp);
+			update_info();
+			fclose(efp);
+			fclose(fp);
+			return i; // return entry index of oft
+		}
+	}
 	fclose(fp);
-	int32_t ret = header_info.oft_entry_cnt++; // write header to fs file
-	header_wb();
-	update_info();
-	return ret; // return entry index of oft
+	return -1;
 }
 
 /* 
@@ -392,7 +420,6 @@ int myfs_file_create(const char* filename)
 {
 	init_fs();
 	/* check same name */
-	/*
 	FILE* fp = fopen(FS_NAME, "rb+");
 	fseek(fp, header_info.oft_startadd, SEEK_SET);
 	OFT temp;
@@ -406,7 +433,6 @@ int myfs_file_create(const char* filename)
 		}
 	}
 	fclose(fp);
-	*/
 
 
 	int32_t map_oft_index = oft_addEntry(filename); 
@@ -423,13 +449,12 @@ int myfs_file_create(const char* filename)
 	index_page_wb(map_oft_index, &ip);
 
 	/* DEBUG */
-	/*
 	printf("check oft_startadd = %ld\n", header_info.oft_startadd);
 	printf("create file with desc %d to %d\n", fd_cnt, ppt[fd_cnt]);
+	printf("index of ip = %d\n", index);
 	//printf("first entry is name: %s and page index: %d\n", oft_ptr[2].filename, oft_ptr[2].index);
 	printf("header oft entry cnt: %d\n", header_info.oft_entry_cnt);
-	*/
-	
+
 	return fd_cnt; // pp desc
 }
 
@@ -604,6 +629,14 @@ int myfs_create(const char *filesystemname, int max_size)
 		for(int i=0; i<header.fpt_entry_cnt; i++)
 			fwrite(&zero, sizeof(zero), 1, fp);
 
+		/* init all oft entries */
+		fseek(fp, header.oft_startadd, SEEK_SET);
+		OFT temp;
+		strcpy(temp.filename, "");
+		temp.index = -1;
+		for(int i=0; i<header.oft_entry_cnt; i++)
+			fwrite(&temp, sizeof(OFT), 1, fp);
+
 		/* write end of table for oft and fpt */
 		fclose(fp);
 		init_fs(); 
@@ -621,7 +654,7 @@ int init_OFT(int max_size, FS_HEADER* header)
 	int32_t OFT_pages = (float)max_size/MB*7+1;
 	header->oft_pages = OFT_pages;
 	header->oft_startadd = sizeof(FS_HEADER);
-	header->oft_entry_cnt = 0;
+	header->oft_entry_cnt = OFT_pages*36;
 }
 
 int init_FPT(int max_size, FS_HEADER* header)
