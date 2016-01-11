@@ -1,124 +1,39 @@
-/***
-File System Structure
+#include "fs_api.h"
 
-*****************************************************
-*   OFT   *   FPL   *            Pages....          *
-*****************************************************
-
-OFT: Open file table
-FPL: Free page list
-
-Indexed Alloc => A page hold all pages which file need
-
-4K page size => hold 36 oft entries
-1M => need 7 pages for OFT
-1 pages for FPT => hold 16.5M
-
-***/
-
-#include <cstdio>
-#include <cstring>
-#include <cstdlib>
-#include <unistd.h>
-#include <dirent.h>
-#include <stdint.h>
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <fcntl.h>
-#include <map>
-#include <vector>
-#include <iostream>
-using namespace std;
-
-#define KB 1024
-#define MB (KB*KB)
-#define GB (MB*KB)
-
-#define MAX_FILE_NAME_LEN 100
-#define MAX_FILE_NUM 1024
-
-#define MAX_FS_NAME_LEN 200
 char FS_NAME[100]; // name of the selected file system
-
-#define PAGE_SIZE (4*KB)
-
 const char FS_EXT[4] = ".fs";
 unsigned fd_cnt = 0; 
 map<int32_t, int32_t> ppt;	// per-process table
-
-typedef struct OFT_element {
-	char filename[MAX_FILE_NAME_LEN];
-	int32_t index;
-}OFT;
-
-typedef struct FPT_element {
-	int8_t flag;
-}FPT;
-
-typedef struct fs_header {
-	int32_t oft_pages;
-	int64_t oft_startadd;
-	int32_t oft_entry_cnt;
-	int32_t fpt_pages;
-	int64_t fpt_startadd;
-	int32_t fpt_entry_cnt;
-	int64_t fpage_startadd;
-}FS_HEADER;
 FS_HEADER header_info; // read from the start of the fs file
-
-typedef struct index_content {
-	int32_t page_number;
-	int32_t remain;
-	vector<int32_t> page_list;
-}index_page;
-
 OFT *oft_ptr = NULL; 
 FPT *fpt_ptr = NULL;
 size_t oft_len, fpt_len;
 
-int select_fs(const char *filesystemname); // not require
-void init_fs();
-int init_OFT(int max_size, FS_HEADER* header);
-int init_FPT(int max_size, FS_HEADER* header);
-int read_header();
-void add_extention(char *target, const char *source);
-int32_t getFreePage(); // wb
-void update_info();
-void header_wb(); // wb
-int32_t oft_addEntry(const char* filename); // wb
-int32_t getPOMap(int32_t index); // work
-int64_t page2addr(int32_t index);
-int32_t getIndexMap(int32_t index);
-void index_page_wb(int32_t oft_index, index_page *ip);
-int32_t allocNewPage(int32_t index);
-void read_indexPage(int32_t index, index_page *ip);
-void showEntries();
-void showPPT();
-
-int myfs_create(const char *filesystemname, int max_size);
-int myfs_destroy(const char *filesystemname);
-int myfs_file_delete(const char* filename);
-int myfs_file_write(int fd, char *buf, int count);
-int myfs_file_read(int fd, char *buf, int count);
-int myfs_file_close(int fd);
-int myfs_file_open(const char* filename);
-int myfs_file_create(const char* filename);
-
-
 int main()
 {
 	myfs_create("my_fs", 1*MB);
-	//myfs_file_create("Create"); // open the duplicate check after
+	myfs_file_create("snow_planet"); // open the duplicate check after
 	
-	int fd = myfs_file_open("Create");
+	int fd = myfs_file_open("snow_planet");
 	showPPT();
-	char buf[5*KB] = "Hello";
-	myfs_file_write(fd, buf, 5*KB);
-	char buf2[20];
-	myfs_file_read(fd, buf2, 6);
-	cout << "read data: " << buf2 << endl;
+
+	FILE *fp = fopen("snow_planet.jpg", "rb");
+	char buf[100*KB];
+	fread(buf, sizeof(char), 100*KB, fp);
+	fclose(fp);
+	fp = NULL;
+
+	myfs_file_write(fd, buf, 100*KB);
+	char buf2[100];
+	myfs_file_read(fd, buf2, 100*KB);
+//	cout << "read data: " << buf2 << endl;
 	myfs_file_close(fd);
 	//showPPT();
+
+	fp = fopen("cp_pic.jpg", "wb+");
+	fwrite(buf2, sizeof(char), 100*KB, fp);
+	fclose(fp);
+	fp = NULL;
 
 	//myfs_file_delete("Check");
 	showEntries();
@@ -223,7 +138,7 @@ int myfs_file_write(int fd, char *buf, int count)
 	
 	int rest = count-ip.remain;
 	int need = 0;
-	int c_count; // for need>0, last page count
+	int c_count = count; 
 	int extra_page = 0;
 	if(rest>0) // need more pages
 	{
@@ -244,22 +159,25 @@ int myfs_file_write(int fd, char *buf, int count)
 	int32_t last_page_index = ip.page_list.back();
 		//printf("need page = %d, c_count = %d, extra_page = %d, last_page_index = %d\n", need, c_count, extra_page, last_page_index);
 	int32_t page_offset = PAGE_SIZE-ip.remain;
-		//cout << page_offset << " " << PAGE_SIZE << " " << ip.remain << endl;
+		cout << page_offset << " " << PAGE_SIZE << " " << ip.remain << endl;
 	fseek(fp, page2addr(last_page_index)+page_offset, SEEK_SET);
 	fwrite(buf, sizeof(char), ip.remain, fp);
 
 	/* write new page */
-	for(int i=0; i<need; i++)
+	for(int i=1; i<=need; i++)
 	{
 		int32_t newPage_index = allocNewPage(oft_index);
 		fseek(fp, page2addr(newPage_index), SEEK_SET);
-		if(i!=need-1)	// not last page => fill it
-			fwrite(buf+ip.remain+i*PAGE_SIZE, sizeof(char), PAGE_SIZE, fp);
+		if(i!=need)	// not last page => fill it
+			fwrite(buf+i*PAGE_SIZE, sizeof(char), PAGE_SIZE, fp);
 		else
-			fwrite(buf+ip.remain+i*PAGE_SIZE, sizeof(char), c_count, fp);
+			fwrite(buf+i*PAGE_SIZE, sizeof(char), c_count, fp);
 	}
 	read_indexPage(oft_index, &ip);
-	ip.remain = PAGE_SIZE-c_count;
+	ip.remain -= c_count;
+	/* DEBUG */
+	printf("c_count = %d, ip remain = %d\n", c_count, ip.remain);
+
 	index_page_wb(oft_index, &ip);
 
 	/* extra page */
@@ -304,6 +222,10 @@ int myfs_file_read(int fd, char *buf, int count)
 	{
 		fseek(fp, page2addr(ip.page_list[need]), SEEK_SET);
 		fread(buf+need*PAGE_SIZE, sizeof(char), c_count, fp);
+
+		char check[4*KB];
+		fseek(fp, page2addr(ip.page_list[need]), SEEK_SET);
+		fread(check, sizeof(char), c_count, fp);
 	}
 	return count;
 }
