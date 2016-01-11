@@ -13,25 +13,28 @@ size_t oft_len, fpt_len;
 /* show ppt map emtry */
 void showPPT()
 {
-	//cout << "Show PPT" << endl;
+	cout << "\tPer-Process Table" << endl;
 	for(map<int32_t, int32_t>::iterator it=ppt.begin(); it!=ppt.end(); it++)
 		cout << it->first << " " << it->second << endl;
+	cout << "---------------------------------" << endl;
 }
 
 /* show all files in fs */
-void showEntries()
+void showEntries(int n)
 {
+	cout << "\tOpen file Table" << endl;
 	init_fs();
 	FILE* fp = fopen(FS_NAME, "rb+");
 	fseek(fp, header_info.oft_startadd, SEEK_SET);
 	OFT temp;
-	for(int i=0; i<header_info.oft_entry_cnt; i++)
+	for(int i=0; i<n; i++)
 	{
 		fread(&temp, sizeof(OFT), 1, fp);
 		//printf("read %s\n", temp.filename);
 		printf("%d\t%s\n", i, temp.filename);
 	}
 	fclose(fp);
+	cout << "---------------------------------" << endl;
 }
 
 /* write header_info to fs */

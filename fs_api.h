@@ -78,7 +78,7 @@ int32_t getIndexMap(int32_t index);
 void index_page_wb(int32_t oft_index, index_page *ip);
 int32_t allocNewPage(int32_t index);
 void read_indexPage(int32_t index, index_page *ip);
-void showEntries();
+void showEntries(int n);
 void showPPT();
 
 int myfs_create(const char *filesystemname, int max_size);
