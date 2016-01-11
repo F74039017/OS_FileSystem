@@ -9,41 +9,11 @@ OFT *oft_ptr = NULL;
 FPT *fpt_ptr = NULL;
 size_t oft_len, fpt_len;
 
-int main()
-{
-	myfs_create("my_fs", 1*MB);
-	myfs_file_create("snow_planet"); // open the duplicate check after
-	
-	int fd = myfs_file_open("snow_planet");
-	showPPT();
-
-	FILE *fp = fopen("snow_planet.jpg", "rb");
-	char buf[100*KB];
-	fread(buf, sizeof(char), 100*KB, fp);
-	fclose(fp);
-	fp = NULL;
-
-	myfs_file_write(fd, buf, 100*KB);
-	char buf2[100];
-	myfs_file_read(fd, buf2, 100*KB);
-//	cout << "read data: " << buf2 << endl;
-	myfs_file_close(fd);
-	//showPPT();
-
-	fp = fopen("cp_pic.jpg", "wb+");
-	fwrite(buf2, sizeof(char), 100*KB, fp);
-	fclose(fp);
-	fp = NULL;
-
-	//myfs_file_delete("Check");
-	showEntries();
-	return 0;
-}
 
 /* show ppt map emtry */
 void showPPT()
 {
-	cout << "Show PPT" << endl;
+	//cout << "Show PPT" << endl;
 	for(map<int32_t, int32_t>::iterator it=ppt.begin(); it!=ppt.end(); it++)
 		cout << it->first << " " << it->second << endl;
 }
@@ -94,7 +64,7 @@ int myfs_file_delete(const char* filename)
 
 			/* Free fpages */
 			int32_t oft_index = i;
-			cout << "delete oft_index = " << oft_index << endl;
+			//cout << "delete oft_index = " << oft_index << endl;
 			index_page ip;
 			read_indexPage(oft_index, &ip);
 			FILE* ffp = fopen(FS_NAME, "rb+");
@@ -127,12 +97,13 @@ return how success number after write, if fd is invalid => return -1
 */
 int myfs_file_write(int fd, char *buf, int count)
 {
+	int ret = 0;
 	init_fs();
 	
 	int32_t oft_index = getPOMap(fd);
 	if(oft_index<0)
 		return -1;
-	cout << "oft_index = " << oft_index << endl;
+	//cout << "oft_index = " << oft_index << endl;
 	index_page ip;
 	read_indexPage(oft_index, &ip);
 	
@@ -159,9 +130,9 @@ int myfs_file_write(int fd, char *buf, int count)
 	int32_t last_page_index = ip.page_list.back();
 		//printf("need page = %d, c_count = %d, extra_page = %d, last_page_index = %d\n", need, c_count, extra_page, last_page_index);
 	int32_t page_offset = PAGE_SIZE-ip.remain;
-		cout << page_offset << " " << PAGE_SIZE << " " << ip.remain << endl;
+		//cout << page_offset << " " << PAGE_SIZE << " " << ip.remain << endl;
 	fseek(fp, page2addr(last_page_index)+page_offset, SEEK_SET);
-	fwrite(buf, sizeof(char), ip.remain, fp);
+	ret += fwrite(buf, sizeof(char), ip.remain, fp);
 
 	/* write new page */
 	for(int i=1; i<=need; i++)
@@ -169,14 +140,14 @@ int myfs_file_write(int fd, char *buf, int count)
 		int32_t newPage_index = allocNewPage(oft_index);
 		fseek(fp, page2addr(newPage_index), SEEK_SET);
 		if(i!=need)	// not last page => fill it
-			fwrite(buf+i*PAGE_SIZE, sizeof(char), PAGE_SIZE, fp);
+			ret += fwrite(buf+i*PAGE_SIZE, sizeof(char), PAGE_SIZE, fp);
 		else
-			fwrite(buf+i*PAGE_SIZE, sizeof(char), c_count, fp);
+			ret += fwrite(buf+i*PAGE_SIZE, sizeof(char), c_count, fp);
 	}
 	read_indexPage(oft_index, &ip);
 	ip.remain -= c_count;
 	/* DEBUG */
-	printf("c_count = %d, ip remain = %d\n", c_count, ip.remain);
+	//printf("c_count = %d, ip remain = %d\n", c_count, ip.remain);
 
 	index_page_wb(oft_index, &ip);
 
@@ -185,7 +156,7 @@ int myfs_file_write(int fd, char *buf, int count)
 		allocNewPage(oft_index);
 
 	fclose(fp);
-	return count;
+	return ret;
 }
 
 /*
@@ -196,12 +167,13 @@ If count is bigger than file size => retuen -1
 */
 int myfs_file_read(int fd, char *buf, int count)
 {
+	int ret = 0;
 	init_fs();
 	
 	int32_t oft_index = getPOMap(fd);
 	if(oft_index<0)
 		return -1;
-	cout << "oft_index = " << oft_index << endl;
+	//cout << "oft_index = " << oft_index << endl;
 	index_page ip;
 	read_indexPage(oft_index, &ip);
 
@@ -215,19 +187,15 @@ int myfs_file_read(int fd, char *buf, int count)
 	for(int i=0; i<need; i++)
 	{
 		fseek(fp, page2addr(ip.page_list[i]), SEEK_SET);
-		fread(buf+i*PAGE_SIZE, sizeof(char), PAGE_SIZE, fp);
+		ret += fread(buf+i*PAGE_SIZE, sizeof(char), PAGE_SIZE, fp);
 	}
 	/* read part of page */
 	if(c_count>0)
 	{
 		fseek(fp, page2addr(ip.page_list[need]), SEEK_SET);
-		fread(buf+need*PAGE_SIZE, sizeof(char), c_count, fp);
-
-		char check[4*KB];
-		fseek(fp, page2addr(ip.page_list[need]), SEEK_SET);
-		fread(check, sizeof(char), c_count, fp);
+		ret += fread(buf+need*PAGE_SIZE, sizeof(char), c_count, fp);
 	}
-	return count;
+	return ret;
 }
 
 /* 
@@ -371,11 +339,13 @@ int myfs_file_create(const char* filename)
 	index_page_wb(map_oft_index, &ip);
 
 	/* DEBUG */
+	/*
 	printf("check oft_startadd = %ld\n", header_info.oft_startadd);
 	printf("create file with desc %d to %d\n", fd_cnt, ppt[fd_cnt]);
 	printf("index of ip = %d\n", index);
 	//printf("first entry is name: %s and page index: %d\n", oft_ptr[2].filename, oft_ptr[2].index);
 	printf("header oft entry cnt: %d\n", header_info.oft_entry_cnt);
+	*/
 
 	return fd_cnt; // pp desc
 }
@@ -439,12 +409,12 @@ void read_indexPage(int32_t oft_index, index_page *ip)
 	}
 	fclose(fp);
 	/* DEBUG */
-	
+	/*
 	printf("index page => number: %d, remain: %d\n", ip->page_number, ip->remain);
 	for(vector<int32_t>::iterator it=ip->page_list.begin(); it!=ip->page_list.end(); it++)
 		cout << *it << " ";
 	cout << endl;
-	
+	*/
 }
 
 /* 
