@@ -37,7 +37,7 @@ puts("Read dog picture and write to test file => myfs_file_write()");
 	printf("Write = %d bytes\n", ret);
 
 puts("Read test file and write to cp_pic.jpg => myfs_file_read()");
-	char buf2[100];
+	char buf2[100*KB];
 	int ret2 = myfs_file_read(fd, buf2, filesize);
 	printf("Read = %d bytes\n", ret2);
 
